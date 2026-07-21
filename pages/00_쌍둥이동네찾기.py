@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import re
+import unicodedata
 from pathlib import Path
 
 import numpy as np
@@ -8,8 +11,49 @@ import streamlit as st
 
 st.set_page_config(page_title="지역별 인구구조 대시보드", layout="wide")
 
-DATA_FILE = Path(__file__).parent / "202606_202606_연령별인구현황_월간.csv"
+DATA_FILENAME = "202606_202606_연령별인구현황_월간.csv"
 ENCODING_CANDIDATES = ["cp949", "euc-kr", "utf-8"]
+
+
+def _candidate_dirs() -> list[Path]:
+    """CSV를 찾아볼 후보 폴더 목록.
+
+    이 스크립트가 리포 루트(main.py)에서 실행되든, Streamlit 멀티페이지 앱의
+    pages/ 하위 스크립트로 실행되든 모두 대응하기 위해 스크립트 폴더, 그 상위 폴더,
+    현재 작업 폴더(cwd, Streamlit Cloud에서는 보통 리포 루트)를 모두 검색한다.
+    """
+    here = Path(__file__).resolve().parent
+    dirs = [here, here.parent, Path.cwd()]
+    seen, unique_dirs = set(), []
+    for d in dirs:
+        if d not in seen:
+            seen.add(d)
+            unique_dirs.append(d)
+    return unique_dirs
+
+
+def resolve_data_file() -> Path | None:
+    """후보 폴더들에서 데이터 CSV를 찾는다.
+
+    한글 파일명은 운영체제/깃 클라이언트에 따라 유니코드 정규화 방식(NFC/NFD)이 달라져
+    화면상 이름은 같아도 바이트가 달라 정확히 일치하지 않는 경우가 있다. 이를 대비해
+    정규화 비교로 한 번 더 찾고, 그래도 없으면 그 폴더 내 CSV가 1개뿐이면 그것을 사용한다.
+    """
+    target_norm = unicodedata.normalize("NFC", DATA_FILENAME)
+
+    for d in _candidate_dirs():
+        exact = d / DATA_FILENAME
+        if exact.exists():
+            return exact
+
+        csv_files = list(d.glob("*.csv"))
+        for p in csv_files:
+            if unicodedata.normalize("NFC", p.name) == target_norm:
+                return p
+        if len(csv_files) == 1:
+            return csv_files[0]
+
+    return None
 
 GENDER_LABEL = {"계": "전체", "남": "남자", "여": "여자"}
 GENDER_COLOR = {"계": "#636EFA", "남": "#00B5F7", "여": "#EF553B"}
@@ -110,15 +154,19 @@ def main():
         "전국에서 인구구조가 가장 비슷한 지역 Top N을 찾아볼 수 있습니다."
     )
 
-    if not DATA_FILE.exists():
+    data_file = resolve_data_file()
+    if data_file is None:
+        searched = _candidate_dirs()
+        found = {str(d): [p.name for p in d.glob("*.csv")] for d in searched}
         st.error(
-            f"데이터 파일을 찾을 수 없습니다: '{DATA_FILE.name}'\n\n"
-            "이 CSV 파일을 app.py와 같은 폴더에 넣어주세요."
+            f"데이터 CSV 파일을 찾을 수 없습니다. (찾는 이름: '{DATA_FILENAME}')\n\n"
+            "리포에 CSV 파일이 커밋되어 있는지 확인해주세요.\n\n"
+            f"검색한 폴더별 CSV 목록: {found}"
         )
         st.stop()
 
     try:
-        df = load_data(DATA_FILE)
+        df = load_data(data_file)
     except UnicodeDecodeError:
         st.error("CSV 인코딩을 인식하지 못했습니다 (cp949 / euc-kr / utf-8 모두 실패).")
         st.stop()
